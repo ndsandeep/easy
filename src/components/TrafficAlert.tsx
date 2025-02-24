@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle,Pen } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 interface TrafficAlertProps {
   onAccept: () => void;

@@ -16,8 +16,8 @@ const Home: React.FC = () => {
   const [destination, setDestination] = useState(DEFAULT_LOCATIONS[1]);
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Global Route Planner</h1>
+    <div className="p-6 max-w-3xl mx-auto ">
+      <h1 className="text-2xl font-bold mb-4 text-red-500">Global Route Planner</h1>
 
       {/* Dropdown for Source Selection */}
       <label>Source:</label>
