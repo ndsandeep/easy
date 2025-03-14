@@ -1,108 +1,62 @@
-import axios from "axios";
+import axios from 'axios';
+import { getTrafficInfo } from './trafficService';
 
-export interface Coordinates {
-  lat: number;
-  lng: number;
-}
+const OSRM_API_BASE = 'https://router.project-osrm.org/route/v1/driving';
 
-export interface RouteData {
+interface Route {
   coordinates: [number, number][];
-  distance?: number;  // in meters
-  duration?: number;  // in seconds
+  distance: number;
+  duration: number;
+  isSelected: boolean;
+  hasTraffic?: boolean;
+  trafficSegments?: [number, number][];
 }
 
-export const fetchRoute = async (
-  source: Coordinates,
-  destination: Coordinates
-): Promise<RouteData> => {
+export async function getAlternativeRoutes(
+  source: { lat: number; lng: number },
+  destination: { lat: number; lng: number }
+): Promise<Route[]> {
   try {
     const response = await axios.get(
-      `https://router.project-osrm.org/route/v1/driving/${source.lng},${source.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson&steps=true`
+      `${OSRM_API_BASE}/${source.lng},${source.lat};${destination.lng},${destination.lat}`,
+      {
+        params: {
+          alternatives: true,
+          steps: true,
+          geometries: 'geojson',
+          overview: 'full'
+        }
+      }
     );
 
-    if (!response.data.routes || response.data.routes.length === 0) {
-      throw new Error("No route found");
-    }
-
-    const route = response.data.routes[0];
-    const routeCoordinates: [number, number][] =
-      route.geometry.coordinates.map(
-        ([lng, lat]: [number, number]) => [lat, lng] // Convert to LatLngTuple
-      );
-
-    return { 
-      coordinates: routeCoordinates,
-      distance: route.distance,
-      duration: route.duration
-    };
-  } catch (error) {
-    console.error("Error fetching route:", error);
-    throw new Error("Failed to fetch route");
-  }
-};
-
-// Function to check for traffic conditions (simulated)
-export const checkTrafficConditions = async (
-  routeCoordinates: [number, number][]
-): Promise<{
-  hasTraffic: boolean;
-  trafficSegments?: [number, number][];
-}> => {
-  // This is a simulated function - in a real app, you would call a traffic API
-  // For demo purposes, we'll randomly determine if there's traffic
-  
-  const hasTraffic = Math.random() > 0.7; // 30% chance of traffic
-  
-  if (!hasTraffic) {
-    return { hasTraffic: false };
-  }
-  
-  // Simulate traffic segments by selecting random portions of the route
-  const trafficSegments: [number, number][] = [];
-  
-  if (routeCoordinates.length > 10) {
-    const startIndex = Math.floor(Math.random() * (routeCoordinates.length / 2));
-    const endIndex = startIndex + Math.floor(Math.random() * 5) + 3; // 3-8 segments with traffic
-    
-    for (let i = startIndex; i < endIndex && i < routeCoordinates.length; i++) {
-      trafficSegments.push(routeCoordinates[i]);
-    }
-  }
-  
-  return {
-    hasTraffic: true,
-    trafficSegments
-  };
-};
-
-// Function to suggest alternative routes
-export const getAlternativeRoutes = async (
-  source: Coordinates,
-  destination: Coordinates
-): Promise<RouteData[]> => {
-  try {
-    const response = await axios.get(
-      `https://router.project-osrm.org/route/v1/driving/${source.lng},${source.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson&alternatives=true`
-    );
-
-    if (!response.data.routes || response.data.routes.length === 0) {
-      throw new Error("No routes found");
-    }
-
-    return response.data.routes.map((route: any) => {
-      const routeCoordinates: [number, number][] =
-        route.geometry.coordinates.map(
-          ([lng, lat]: [number, number]) => [lat, lng]
+    const routes: Route[] = await Promise.all(
+      response.data.routes.map(async (route: any) => {
+        const coordinates = route.geometry.coordinates.map(
+          (coord: [number, number]) => [coord[1], coord[0]] as [number, number]
         );
 
-      return {
-        coordinates: routeCoordinates,
-        distance: route.distance,
-        duration: route.duration
-      };
-    });
+        // Get traffic information for this route
+        const trafficInfo = await getTrafficInfo(coordinates);
+
+        return {
+          coordinates,
+          distance: route.distance,
+          duration: route.duration,
+          isSelected: false,
+          hasTraffic: trafficInfo.hasTraffic,
+          trafficSegments: trafficInfo.trafficSegments
+        };
+      })
+    );
+
+    // Mark the first route as selected by default
+    if (routes.length > 0) {
+      routes[0].isSelected = true;
+    }
+
+    return routes;
   } catch (error) {
-    console.error("Error fetching alternative routes:", error);
-    throw new Error("Failed to fetch alternative routes");
+    console.error('Error fetching routes:', error);
+    throw error;
   }
-};
+}
