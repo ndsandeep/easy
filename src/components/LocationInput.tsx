@@ -1,301 +1,227 @@
-import React, { useState, useEffect, useRef } from "react";
-import { fetchGeocodeSuggestions, reverseGeocode } from "../utils/geocodingService";
-import { Search, Navigation, MapPin, Loader2 } from "lucide-react";
+import React, { useEffect, useState, useRef } from "react";
+import { MapContainer, TileLayer, Polyline, Marker, useMap, Circle } from "react-leaflet"; 
+import L, { LatLngExpression, LatLngTuple } from "leaflet";
+import "leaflet/dist/leaflet.css";
+import { getAlternativeRoutes } from "../utils/osrmService";
+import { Loader2 } from "lucide-react";
 
-// Define the type for a suggestion
-interface Suggestion {
-  placeName: string;
-  latitude: number;
-  longitude: number;
+// Create custom marker icons to ensure they display properly
+const createCustomIcon = (color = 'blue') => {
+  return new L.Icon({
+    iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41]
+  });
+};
+
+// Define TypeScript Types
+interface Coordinates {
+  lat: number;
+  lng: number;
 }
 
-interface LocationInputProps {
-  source: string;
-  destination: string;
-  setSource: (value: string) => void;
-  setDestination: (value: string) => void;
-  onSelectSource: (coords: { lat: number; lng: number }) => void;
-  onSelectDestination: (coords: { lat: number; lng: number }) => void;
+interface Route {
+  coordinates: [number, number][];
+  distance: number;
+  duration: number;
+  isSelected: boolean;
+  hasTraffic?: boolean;
+  trafficSegments?: [number, number][];
+  severity?: 'low' | 'medium' | 'high';
+  delay?: number;
+}
+
+interface MapProps {
+  source: Coordinates | null;
+  destination: Coordinates | null;
+  routes: Route[];
+  onRoutesLoaded: (routes: Route[]) => void;
+  onRouteSelect: (index: number) => void;
+  isLoading: boolean;
   setIsLoading: (isLoading: boolean) => void;
 }
 
-const LocationInput: React.FC<LocationInputProps> = ({
-  source,
-  destination,
-  setSource,
-  setDestination,
-  onSelectSource,
-  onSelectDestination,
-  setIsLoading,
-}) => {
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [activeInput, setActiveInput] = useState<"source" | "destination" | null>(null);
-  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState<boolean>(false);
-  const [isGettingLocation, setIsGettingLocation] = useState<boolean>(false);
-  const [locationError, setLocationError] = useState<string | null>(null);
-  const suggestionsRef = useRef<HTMLDivElement>(null);
-  const sourceCoords = useRef<{ lat: number; lng: number } | null>(null);
-  const destCoords = useRef<{ lat: number; lng: number } | null>(null);
-
-  // Debounce function to limit API calls
-  const debounce = (func: Function, delay: number) => {
-    let timeoutId: NodeJS.Timeout;
-    return (...args: any[]) => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => func(...args), delay);
-    };
-  };
-
-  const debouncedFetchSuggestions = useRef(
-    debounce(async (value: string, type: "source" | "destination") => {
-      if (value.length < 3) {
-        setSuggestions([]);
-        setActiveInput(null);
-        return;
-      }
-
-      setIsLoadingSuggestions(true);
-      try {
-        const results: Suggestion[] = await fetchGeocodeSuggestions(value);
-        
-        if (results.length > 0) {
-          setSuggestions(results);
-          setActiveInput(type);
-        } else {
-          setSuggestions([]);
-          setActiveInput(null);
-        }
-      } catch (error) {
-        console.error("Failed to fetch geocode suggestions:", error);
-        setSuggestions([]);
-      } finally {
-        setIsLoadingSuggestions(false);
-      }
-    }, 300)
-  ).current;
-
-  const handleInputChange = (value: string, type: "source" | "destination") => {
-    if (type === "source") setSource(value);
-    else setDestination(value);
-    
-    debouncedFetchSuggestions(value, type);
-  };
-
-  const getCurrentLocation = async (forInput: "source" | "destination") => {
-    setIsGettingLocation(true);
-    setLocationError(null);
-    
-    if (!navigator.geolocation) {
-      setLocationError("Geolocation is not supported by your browser");
-      setIsGettingLocation(false);
-      return;
-    }
-    
-    try {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const { latitude, longitude } = position.coords;
-          const coords = { lat: latitude, lng: longitude };
-          
-          // Perform reverse geocoding to get the address
-          try {
-            const address = await reverseGeocode(latitude, longitude);
-            
-            if (forInput === "source") {
-              setSource(address);
-              onSelectSource(coords);
-              sourceCoords.current = coords;
-            } else {
-              setDestination(address);
-              onSelectDestination(coords);
-              destCoords.current = coords;
-            }
-          } catch (error) {
-            console.error("Reverse geocoding error:", error);
-            setLocationError("Failed to get address from your location");
-            
-            // Even if reverse geocoding fails, still set the coordinates
-            if (forInput === "source") {
-              setSource(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-              onSelectSource(coords);
-              sourceCoords.current = coords;
-            } else {
-              setDestination(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-              onSelectDestination(coords);
-              destCoords.current = coords;
-            }
-          }
-          
-          setIsGettingLocation(false);
-        },
-        (error) => {
-          console.error("Geolocation error:", error);
-          let errorMessage = "Failed to get your location";
-          
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              errorMessage = "Location access denied. Please enable location services.";
-              break;
-            case error.POSITION_UNAVAILABLE:
-              errorMessage = "Location information is unavailable.";
-              break;
-            case error.TIMEOUT:
-              errorMessage = "Location request timed out.";
-              break;
-          }
-          
-          setLocationError(errorMessage);
-          setIsGettingLocation(false);
-        },
-        { 
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
-        }
-      );
-    } catch (error) {
-      console.error("Geolocation error:", error);
-      setLocationError("An unexpected error occurred while getting your location");
-      setIsGettingLocation(false);
-    }
-  };
-
-  // Close suggestions when clicking outside
+// Component to handle map view updates
+const MapUpdater: React.FC<{
+  source: Coordinates | null;
+  destination: Coordinates | null;
+  routes: Route[];
+}> = ({ source, destination, routes }) => {
+  const map = useMap();
+  
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (suggestionsRef.current && !suggestionsRef.current.contains(event.target as Node)) {
-        setActiveInput(null);
+    if (source && destination) {
+      const bounds = L.latLngBounds(
+        [source.lat, source.lng],
+        [destination.lat, destination.lng]
+      );
+      
+      // If we have routes, include all route points in the bounds
+      if (routes.length > 0) {
+        const selectedRoute = routes.find(r => r.isSelected) || routes[0];
+        if (selectedRoute) {
+          selectedRoute.coordinates.forEach(point => {
+            bounds.extend(point);
+          });
+        }
       }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, []);
-
-  const handlePlanRoute = () => {
-    if (source && destination && sourceCoords.current && destCoords.current) {
-      setIsLoading(true);
-      onSelectSource(sourceCoords.current);
-      onSelectDestination(destCoords.current);
-      console.log("Planning route from", source, "to", destination);
+      
+      // Add some padding around the bounds
+      map.fitBounds(bounds, { padding: [50, 50] });
+    } else if (source) {
+      map.setView([source.lat, source.lng], 13);
+    } else if (destination) {
+      map.setView([destination.lat, destination.lng], 13);
     }
+  }, [map, source, destination, routes]);
+  
+  return null;
+};
+
+const defaultCenter: LatLngExpression = [16.3067, 80.4365]; // Default to Guntur
+
+const Map: React.FC<MapProps> = ({ 
+  source, 
+  destination, 
+  routes, 
+  onRoutesLoaded, 
+  onRouteSelect,
+  isLoading,
+  setIsLoading
+}) => {
+  const [error, setError] = useState<string | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const sourceIcon = createCustomIcon('green');
+  const destinationIcon = createCustomIcon('red');
+
+  const getTrafficColor = (severity?: 'low' | 'medium' | 'high') => {
+    switch (severity) {
+      case 'high':
+        return '#ef4444'; // red
+      case 'medium':
+        return '#f97316'; // orange
+      case 'low':
+        return '#22c55e'; // green
+      default:
+        return '#ef4444';
+    }
+  };
+
+  useEffect(() => {
+    if (source && destination) {
+      setIsLoading(true);
+      setError(null);
+      
+      getAlternativeRoutes(source, destination)
+        .then((data) => {
+          onRoutesLoaded(data);
+        })
+        .catch((err) => {
+          console.error("Error fetching routes:", err);
+          setError("Failed to fetch routes. Please try again.");
+          setIsLoading(false);
+        });
+    }
+  }, [source, destination, onRoutesLoaded, setIsLoading]);
+
+  const handleRouteClick = (index: number) => {
+    onRouteSelect(index);
   };
 
   return (
-    <div className="flex flex-col space-y-4 w-full relative">
-      {locationError && (
-        <div className="bg-red-50 text-red-600 p-3 rounded-md mb-2 text-sm">
-          {locationError}
+    <div className="relative w-full h-[500px] rounded-lg overflow-hidden">
+      {isLoading && (
+        <div className="absolute top-2 right-2 z-[1000] bg-white px-3 py-1 rounded-full shadow-md text-sm flex items-center">
+          <Loader2 className="animate-spin h-4 w-4 mr-2 text-blue-500" />
+          Loading routes...
         </div>
       )}
       
-      <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-gray-400" />
-        </div>
-        <input
-          type="text"
-          value={source}
-          onChange={(e) => handleInputChange(e.target.value, "source")}
-          onFocus={() => source.length >= 3 && setActiveInput("source")}
-          placeholder="Enter source location"
-          className="pl-10 w-full border border-gray-300 p-2 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
-        />
-        {isLoadingSuggestions && activeInput === "source" && (
-          <div className="absolute right-10 top-1/2 transform -translate-y-1/2">
-            <div className="animate-spin h-4 w-4 border-2 border-blue-500 rounded-full border-t-transparent"></div>
-          </div>
-        )}
-        <button
-          onClick={() => getCurrentLocation("source")}
-          disabled={isGettingLocation}
-          className="absolute right-2 top-1/2 transform -translate-y-1/2 text-blue-600 hover:text-blue-800"
-          title="Use current location"
-        >
-          {isGettingLocation && activeInput === "source" ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            <MapPin className="h-5 w-5" />
-          )}
-        </button>
-      </div>
-
-      <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-gray-400" />
-        </div>
-        <input
-          type="text"
-          value={destination}
-          onChange={(e) => handleInputChange(e.target.value, "destination")}
-          onFocus={() => destination.length >= 3 && setActiveInput("destination")}
-          placeholder="Enter destination location"
-          className="pl-10 w-full border border-gray-300 p-2 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
-        />
-        {isLoadingSuggestions && activeInput === "destination" && (
-          <div className="absolute right-10 top-1/2 transform -translate-y-1/2">
-            <div className="animate-spin h-4 w-4 border-2 border-blue-500 rounded-full border-t-transparent"></div>
-          </div>
-        )}
-        <button
-          onClick={() => getCurrentLocation("destination")}
-          disabled={isGettingLocation}
-          className="absolute right-2 top-1/2 transform -translate-y-1/2 text-blue-600 hover:text-blue-800"
-          title="Use current location"
-        >
-          {isGettingLocation && activeInput === "destination" ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            <MapPin className="h-5 w-5" />
-          )}
-        </button>
-      </div>
-
-      {suggestions.length > 0 && activeInput && (
-        <div 
-          ref={suggestionsRef}
-          className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto suggestions"
-          style={{ top: activeInput === "source" ? "48px" : "108px" }}
-        >
-          {suggestions.map((s, index) => (
-            <div
-              key={index}
-              className="p-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0"
-              onClick={() => {
-                if (activeInput === "source") {
-                  setSource(s.placeName);
-                  onSelectSource({ lat: s.latitude, lng: s.longitude });
-                  sourceCoords.current = { lat: s.latitude, lng: s.longitude };
-                } else {
-                  setDestination(s.placeName);
-                  onSelectDestination({ lat: s.latitude, lng: s.longitude });
-                  destCoords.current = { lat: s.latitude, lng: s.longitude };
-                }
-                setActiveInput(null);
-              }}
-            >
-              {s.placeName}
-            </div>
-          ))}
+      {error && (
+        <div className="absolute top-2 right-2 z-[1000] bg-red-50 text-red-600 px-3 py-1 rounded-full shadow-md text-sm">
+          {error}
         </div>
       )}
+
+      <div className="absolute bottom-4 right-4 z-[1000] bg-white p-3 rounded-lg shadow-md">
+        <div className="text-sm font-medium mb-2">Traffic Legend</div>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-red-500 opacity-30"></div>
+            <span className="text-xs">Heavy Traffic</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-orange-500 opacity-30"></div>
+            <span className="text-xs">Moderate Traffic</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-green-500 opacity-30"></div>
+            <span className="text-xs">Clear Route</span>
+          </div>
+        </div>
+      </div>
       
-      <button 
-        className="mt-2 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md transition-colors flex items-center justify-center disabled:bg-blue-300 disabled:cursor-not-allowed"
-        onClick={handlePlanRoute}
-        disabled={!source || !destination}
+      <MapContainer 
+        center={defaultCenter} 
+        zoom={13} 
+        className="w-full h-full"
+        whenCreated={(map) => { mapRef.current = map; }}
       >
-        {isGettingLocation ? (
-          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-        ) : (
-          <Navigation className="mr-2" size={20} />
+        <TileLayer 
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" 
+        />
+        
+        {source && (
+          <Marker 
+            position={[source.lat, source.lng]}
+            icon={sourceIcon}
+            title="Source"
+          />
         )}
-        Plan Route
-      </button>
+        
+        {destination && (
+          <Marker 
+            position={[destination.lat, destination.lng]}
+            icon={destinationIcon}
+            title="Destination"
+          />
+        )}
+        
+        {routes.map((route, index) => (
+          <React.Fragment key={index}>
+            <Polyline 
+              positions={route.coordinates} 
+              color={route.isSelected ? "#3b82f6" : "#9ca3af"} 
+              weight={route.isSelected ? 5 : 3}
+              opacity={route.isSelected ? 0.8 : 0.5}
+              eventHandlers={{
+                click: () => handleRouteClick(index)
+              }}
+              className="cursor-pointer"
+            />
+            {route.isSelected && route.trafficSegments && route.trafficSegments.map((segment, segIndex) => (
+              <Circle
+                key={`traffic-${segIndex}`}
+                center={segment}
+                radius={200}
+                pathOptions={{
+                  color: getTrafficColor(route.severity),
+                  fillColor: getTrafficColor(route.severity),
+                  fillOpacity: 0.3
+                }}
+              />
+            ))}
+          </React.Fragment>
+        ))}
+        
+        <MapUpdater source={source} destination={destination} routes={routes} />
+      </MapContainer>
     </div>
   );
 };
 
-export default LocationInput;
+export default Map;
